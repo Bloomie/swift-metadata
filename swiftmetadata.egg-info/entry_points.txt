@@ -1,0 +1,3 @@
+[paste.filter_factory]
+swiftmetadata = swiftmetadata.middleware:filter_factory
+

@@ -1,0 +1,13 @@
+README.rst
+setup.py
+swiftmetadata/__init__.py
+swiftmetadata/_version.py
+swiftmetadata/client.py
+swiftmetadata/config.py
+swiftmetadata/middleware.py
+swiftmetadata.egg-info/PKG-INFO
+swiftmetadata.egg-info/SOURCES.txt
+swiftmetadata.egg-info/dependency_links.txt
+swiftmetadata.egg-info/entry_points.txt
+swiftmetadata.egg-info/pbr.json
+swiftmetadata.egg-info/top_level.txt
