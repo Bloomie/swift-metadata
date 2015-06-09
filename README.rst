@@ -5,7 +5,8 @@
 2. в директории swift-middleware:
     *sudo python setup.py install*
 
-3. в директории python-swiftclient:
+3. скачать модифицированный python-swiftclient: https://github.com/Bloomie/python-swiftclient.git
+   в директории python-swiftclient:
     *sudo python setup.py install*
 
 
