@@ -1,12 +1,20 @@
 Установка:
 ===================================================
+1. установить и настроить **MongoDB**
 
-1. sudo python setup.py install
+2. в директории swift-middleware:
+    *sudo python setup.py install*
+
+3. в директории python-swiftclient:
+    *sudo python setup.py install*
+
 
 Настройка:
 ===================================================
 
-1. Файл swift.conf (/etc/swift/swift.conf)
+**На тех машинах, где стоит swift-proxy сервер, необходимо настроить**
+
+1. Файл swift.conf (*/etc/swift/swift.conf*)
 
 - Необходимо добавить в конец файла:
     
@@ -16,15 +24,8 @@
     
     db_port = 27017 # порт MongoDB
     
-    db_name = test # имя БД
+    db_name = *test* # имя БД
     
-    col_name = meta # имя коллекции
-    
-    [swift defaults]
-    
-    default_owner = default # Владелец файла по-умолчанию
-    
-    container_name = test_container # Контейнер, в котором производится поиск (?)
 
 2. Файл proxy-server.conf (/etc/swift/proxy-server.conf)
 
@@ -36,44 +37,127 @@
     
     [pipeline:main]
 
-    pipeline = -//- swiftmetadata -//-
+    pipeline = proxy-logging **swiftmetadata** proxy-server
+
+    (необходимо соблюдать порядок в pipeline)
+
+
 
 Использование:
 ===================================================
 
-- Импорт модуля: import swiftmetadata
-- Создание соединения(параметры такие-же, как и при создании соединения в python-swiftclient): client = swiftmetadata.client.Client(**kwargs)
-- Методы put_object, post_object теперь работают с мета-данными: В put_object(), post_object() появляется возможность в headers добавить метаданные в формате {Metafield-{name}: {value}}. Стоит отметить, что мета-данные ‘Metafield-Owner’ является обязательным. Если его не указать, то оно добавиться со сначение default_owner. 
+**Используемые параметры**
+  - ``CONTAINER_NAME`` - имя контейнера, в котором вы будете хранить объекты, *string*
 
-        Пример: 
+  - ``OBJ_NAME`` - имя объекта, *string*
 
+  - ``OBJ`` - объект
 
-        headers = {}
+  - ``HEADERS`` - метаданные, *dict*
+  
+    Метаданные объекта имеют вид:
+    
+      ``ключ``: ``значение``,
 
-        headers['Metafield-Owner'] = 'test-owner'
-        
-        headers['test'] = 'test'
-        
-        client.put_object('test_container', 'test.jpg', contents=open('test.jpg', 'r'), headers=headers)
-
-- get_objects_by_metadata(metadata) - поиск по мета-данным. Как параметр metadata передается словарь в виде {Metafield-{name}: {value}}
-
-		Пример:
+    где ключ - строка вида "Metafield-{Key}"
 
 
-		client.get_objects_by_meta(metadata={‘name’: ’test-name’})
+**Создание объекта соединения**
+  import from swiftclient import client as sc
 
-- get_objects_by_keys(keys, existense_flag) - поиск по ключам. 2 параметра: keys - список ключей, existense_flag - флаг присутствия/отсутствия ключей
+  sc_args = {
 
-		Пример:
+    'authurl': *AUTH_URL*,
+
+    'user': *USERNAME*,
+
+    'key': *PASSWORD*,
+
+    'auth_version': *AUTH_VERSION*,
+
+    'tenant_name': *TENANT_NAME*,
+
+  }
+
+  conn = sc.Connection(\**sc_args)
 
 
-		client.get_objects_by_keys(keys=[‘key1’, ‘key2’], existense_flag=False)
+Работа с контейнерами
+^^^^^^^^^^^^^^^^^^^^^
+- **Получить информацию о контейнере:**
+  
+  conn.get_container(CONTAINER_NAME)
 
-- delete_object(container, object, owner, kwargs) - удаление объекта. 3 параметра: container - имя контейнера, из которого удаляется объект, object - имя объекта, owner - имя владельца файла, которое указано в Мета-поле "Metafield-Owner"
+- **Добавление контейнера**:
 
-    Пример:
+ conn.put_container(CONTAINER_NAME, headers=HEADERS)
 
-    client.delete_object('test_container', 'test.jpg', owner='test-owner')
+  Чтобы добавить версионирование контейнера, необходимо добавить:
 
-    client.delete_object('test_container', '12352167822')
+  ``HEADERS['X-Versions-Location'] = VERSION_CONTAINER``,
+  где ``VERSION_CONTAINER`` - имя контейнера, в котором будут храниться старые версии объектов
+
+- **Обновление метаданных контейнера:**
+
+  conn.post_container(CONTAINER_NAME, headers=HEADERS)
+
+    Чтобы добавить версионирование контейнера, необходимо добавить:
+
+    ``HEADERS['X-Versions-Location'] = VERSION_CONTAINER``,
+    где ``VERSION_CONTAINER`` - имя контейнера, в котором будут храниться старые версии объектов
+
+- **Удаление контейнера:**
+
+  conn.delete_container(CONTAINER_NAME)
+
+  Перед удалением контейнера, необходимо удостовериться, что в нем нет объектов. В противном случае - удалить объекты вручную
+
+Работа с объектами
+^^^^^^^^^^^^^^^^^^^^^
+
+Для работы с объектами используется поле метаданных "Metafield-Owner".
+Если оно не будет указано в параметре headers, владельцем будет считаться пользователь сессии
+
+- **Получение объекта:**
+
+  conn.get_object(CONTAINER_NAME, OBJ_NAME, headers=HEADERS)
+
+- **Добавление объекта:**
+
+  conn.put_object(CONTAINER_NAME, OBJ_NAME, contents=OBJ, headers=HEADERS)
+
+- **Обновление объекта:**
+  
+  conn.post_object(CONTAINER_NAME, OBJ_NAME, headers=HEADERS)
+
+- **Удаление объекта:**
+
+  conn.delete_object(CONTAINER_NAME, OBJ_NAME, headers=HEADERS)
+
+Поиск объектов
+^^^^^^^^^^^^^^^^^^^^^
+
+Поиск в производится указанном контейнере
+
+- **Поиск в по метаданным({ключ}:{значение}):**
+
+  conn.get_container(CONTAINER_NAME, headers=HEADERS)
+
+  Для поиска необходимо иметь поле
+
+  ``HEADERS["SEARCH"] = True.``
+
+  Поиск будет осуществляться по тем метаданным, которые вы передадите в HEADERS с ключами вида Metafield-{Key}
+
+- **Поиск по ключам:**
+
+  conn.get_container(CONTAINER_NAME, headers=HEADERS)
+
+  Для поиска необходимо иметь поле
+
+  ``HEADERS["SEARCH"] = True.``
+
+  Поиск будет осуществляться по наличию или отсутствию ключей;
+  В HEADERS необходимо иметь пары 
+
+    ``Metafield-{key}: True/False``
