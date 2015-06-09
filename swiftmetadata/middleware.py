@@ -1,14 +1,16 @@
 from swift.common import wsgi
-from swift.common.swob import wsgify, Response
 from swift.common.utils import split_path
+
+from webob import Response
 
 from pymongo import MongoClient
 from hashlib import md5
 
+from swift.common.swob import Request, HTTPBadRequest
 from swiftmetadata.config import get_config_options
 
-def get_id(objname, owner):
-'''computes id from object name and owner'''
+def compute_id(objname, owner):
+    '''Computes id from object name and owner'''
     return md5(objname + owner).hexdigest()
 
 
@@ -20,48 +22,82 @@ class SummitMiddleware(object):
 
     	self.options = get_config_options()
 
-    @wsgify
-    def __call__(self, request):
+    def __call__(self, env, start_response):
         try:
-            (version, account, container, objname) = split_path(request.path_info, 4, 4, True)
+            (version, account, container, objname) = split_path(env['PATH_INFO'], 3, 4, True)
+
+            client = MongoClient(self.options['db_host'], self.options['db_port'])
+            db = client[self.options['db_name']]
         except ValueError:
-            return self.app
-       
-	'''Does nothing if owner is not specified'''
-	if 'Metafield-Owner' not in request.headers and request.method == 'GET':
-	    return self.app
- 
-	metadata = {k: request.headers[k] for k in request.headers.keys() if k.startswith('Metafield-')}
-        owner = metadata.get('Metafield-Owner', self.options['default_owner'])
+            return self.app(env, start_response)
+        
+        metadata = {k: env[k] for k in env.keys() if k.startswith('HTTP_METAFIELD_')}
+        
+        #entering when get_container with SEARCH flag is called
+        if not objname and env['REQUEST_METHOD'] == 'GET' and 'HTTP_SEARCH' in env: 
+            objects = None
+
+            #searching by metadata
+            if env['HTTP_SEARCH'] == 'META':
+                objects = [{k: str(x[k]) for k in x.keys()} for x in db[container].find(metadata)]
+
+            #searching by key: True/False    
+            elif env['HTTP_SEARCH'] == 'KEYS':
+                meta_dict = {k: {'$exists': metadata[k]} for k in metadata}
+                objects = [{k: str(x[k]) for k in x.keys()} for x in db[container].find(metadata)]
+
+            return Response(json_body=objects)(env, start_response) 
+
+        elif not objname:
+            return self.app(env, start_response)
+
 	filename = objname
-	'''Swiftclient's delete_object method has no headers, so we assume objname is swift object's id'''
-	if not request.method == 'DELETE':
-	    objname = get_id(objname, owner) 
+        metadata['HTTP_METAFIELD_OWNER'] = metadata.get('HTTP_METAFIELD_OWNER', None) or env['HTTP_X_USER_NAME'] 
+        objname = compute_id(objname, metadata.get('HTTP_METAFIELD_OWNER'))
+	env['PATH_INFO'] = '/%s/%s/%s/%s' % (version, account, container, objname)
 
-	request.path_info = '/%s/%s/%s/%s' % (version, account, container, objname)
-
-	if request.method == 'GET':
-	    return self.app
-
-	metadata['_id'] = objname
+	metadata['docId'] = objname
 	metadata['objname'] = filename
 
-	client = MongoClient(self.options['db_host'], self.options['db_port'])
-        db = client[self.options['db_name']]
-
-        if request.method == 'PUT':
-            db[self.options['col_name']].insert_one(metadata)
-
-        elif request.method == 'POST':
+        if env['REQUEST_METHOD'] == 'PUT':
+            #put object depends on version
+            try:
+                cur_doc = db[container].find({'docId': objname})[0]
+                metadata['v'] = cur_doc['v'] + 1
+                db['version-'+container].insert_one(cur_doc)
+                db[container].insert_one(metadata)
+                db[container].remove(cur_doc)
+            except:
+                metadata['v'] = 1
+                db[container].insert_one(metadata)
+            
+        elif env['REQUEST_METHOD'] == 'POST':
 	    '''Forms new metadata from union'''
-            doc = db[self.options['col_name']].find({'_id': objname})[0]
+            doc = db[container].find({'docId': objname})[0]
             updated_doc = dict(doc.items() + metadata.items())
-            db[self.options['col_name']].update(doc, updated_doc)
+            db[container].update(doc, updated_doc)
 
-        elif request.method == 'DELETE':
-            db[self.options['col_name']].remove({'_id': objname})
-	
-        return self.app
+        elif env['REQUEST_METHOD'] == 'DELETE':
+            #delete object depends on version
+            try:
+                doc = db['version-'+container].find({'docId': objname}).sort([('v', -1)]).limit(-1)[0]
+                db[container].remove({'docId': objname})
+                db['version-'+container].remove(doc)
+                db[container].insert_one(doc)
+            except:
+                db[container].remove({'docId': objname})
+
+	resp = Request(env).get_response(self.app)
+
+        #revert changes if swift put fails
+	if resp.status[0] != '2' and env['REQUEST_METHOD'] == 'PUT':
+	    try:
+		db[container].remove(metadata)
+		db[container].insert_one(cur_doc)
+		db['version-'+container].remove(cur_doc)
+	    except:
+		db[container].remove(metadata)
+        return self.app(env, start_response)
 
 
 def filter_factory(global_config, **local_config):
@@ -72,5 +108,4 @@ def filter_factory(global_config, **local_config):
         return SummitMiddleware(app, suffix=suffix)
 
     return factory
-
 
